@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
-import json, re
-
-app = Flask(__name__)
+import json
+import base64
+import re
 
 ALLOWED_EXTENSIONS = {'txt'}
 cve_pattern = r'\[ CVSS:v([23]) \] \[([HCMLI])\] (\d+\.\d+) / (CVE-\d+-\d+)'
@@ -12,52 +12,28 @@ catPattern = r':\s*([^/]+)'
 behPattern = r'\].*?\n\s+(.+)'
 expPattern = r'Explained:(.*?)Prevalence'
 
-def allowed_file(filename):
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-def handle_file_upload():
-    if 'file' not in request.files:
-        return jsonify({"error": "No file part in the request"}), 400
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({"error": "No file selected"}), 400
-    if not allowed_file(file.filename):
-        return jsonify({"error": "File extension not allowed"}), 400
-
-    # Read file content
-    file_content = file.read()
-
-    # Try to decode file content to string for JSON response
-    try:
-        content_str = file_content.decode('utf-8')
-    except UnicodeDecodeError:
-        # If binary or non-UTF8, return base64 encoded string instead
-        import base64
-        content_str = base64.b64encode(file_content).decode('utf-8')
-
-    return content_str
+app = Flask(__name__)
 
 # Process the Malware report from Assure -. converts to JSON
 def processMal(content):
     entries = re.split(r'-{80,}', content)
     json_data = []
-
     for entry in entries:
         temp = {}
-
         if entry.strip():
-            temp["malware_name"] = re.search(r"\[ SEVERITY:10/10 \] (.+)", entry).group(1).strip()
-            
+            match = re.search(r"\[ SEVERITY:10/10 \] (.+)", entry)
+            if match:
+                temp["malware_name"] = match.group(1).strip()
+            else:
+                # Handle the case where no match is found
+                temp["malware_name"] = "No match found"  # Or some other default value or error handling
             if 'SUSPECT' in entry:
                 temp["suspected_malware"] = True
             else:
                 temp["suspected_malware"] = False
             temp["detections"] = re.findall(r'\d+\) (.+)', entry)
-
-
             json_data.append(temp)
-
     return json_data
 
 
@@ -94,6 +70,7 @@ def parse_detections(text):
     else:
         # No detections so return None (null)
         return None
+    
 
 
 def parse_suppressed(text):
@@ -112,6 +89,8 @@ def parse_suppressed(text):
         return results
     else:
         return None
+    
+
 
 
 def processVuln(content):
@@ -152,6 +131,8 @@ def processVuln(content):
         result.append(parsed)
 
     return result
+
+
 
 
 def processBehaviors(content):
@@ -210,7 +191,174 @@ def processBehaviors(content):
     return result
 
 
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+def handle_file_upload():
+    if 'file' not in request.files:
+        return jsonify({"error": "No file part in the request"}), 400
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "No file selected"}), 400
+    if not allowed_file(file.filename):
+        return jsonify({"error": "File extension not allowed"}), 400
+
+    # Read file content
+    file_content = file.read()
+
+    # Try to decode file content to string for JSON response
+    try:
+        content_str = file_content.decode('utf-8')
+    except UnicodeDecodeError:
+        # If binary or non-UTF8, return base64 encoded string instead
+        import base64
+        content_str = base64.b64encode(file_content).decode('utf-8')
+
+    return content_str
+
+
+
+## ========================================================
+## SBOM filtering functions
+## ========================================================
+
+def process_config(config_content):
+    global checkMalware, checkSuspect, vulnExists, vulnThreshold, behaviors, findings
+    temp = {}
+
+    try:
+        data = config_content
+        temp["config"]=data
+        temp["findings"]=[]
+        print(f"Successfully loaded Config data")
+
+    except json.JSONDecodeError:
+        print(f"Error: Invalid JSON format in the Config file")
+    except Exception as e:
+        print(f"An error occurred while processing Config JSON: {str(e)}")
+    
+    return temp
+
+
+def filter_vulns(vuln_file, findings):
+    vulnThreshold = float(findings["config"]["vulnThreshold"])
+    vulnExists = findings["config"]["vulnExists"]
+
+    try:
+        vuln = vuln_file
+        print(f"Successfully loaded the Vulns data")
+
+        if len(vuln) > 0:
+            print("Vulnerabilities detected!")
+            for item in vuln:
+                temp = {}
+                if item["cve_score"] > vulnThreshold and item["detections"]:
+                    temp["type"]="vulnerability"
+                    temp["name"]=item["cve_name"]
+                    temp["severity"] = item["cve_score"]
+                    temp["description"] = item["description"]
+                    temp["locations"]=item["detections"]
+                    findings["findings"].append(temp)
+                elif vulnExists and "YES" in item["exploitable"] and item["detections"]:
+                    temp["type"]="vulnerability"
+                    temp["name"]=item["cve_name"]
+                    temp["severity"] = item["cve_score"]
+                    temp["description"] = item["description"]
+                    temp["locations"]=item["detections"]
+                    findings["findings"].append(temp)
+
+            return findings
+        else:
+            return findings
+        
+
+        print("Done processing vulns!")
+    except json.JSONDecodeError:
+        print(f"Error: Invalid JSON format in the Report file")
+    except Exception as e:
+        print(f"An error occurred while processing Report JSON: {str(e)}")
+
+
+
+def filter_malware(malware_file, findings):
+    checkSuspect = findings["config"]["suspect"]
+    checkMalware = findings["config"]["malware"]
+
+    try:
+        mal = malware_file
+        print(f"Successfully loaded the Malware data")
+    
+        ##Check for Malware
+        if checkMalware and len(malware_file) > 0:
+            print("Malware Detected!")
+            
+            for item in mal:
+                temp = {}
+                if item["malware_name"] and not item["suspected_malware"]: ## Check if malware is TRUE
+                    temp["type"]="malware"
+                    temp["name"]=item["malware_name"]
+                    temp["suspect"] = False
+                    temp["locations"]=item["detections"]
+                    findings["findings"].append(temp)
+                elif  checkSuspect and  item["suspected_malware"]: ## Check if config has suspect set to TRUE
+                    temp["type"]="suspected malware"
+                    temp["name"]=item["malware_name"]
+                    temp["suspect"] = True
+                    temp["locations"]=item["detections"]
+                    findings["findings"].append(temp)
+            return findings
+        else:
+            print("Not checking for malware...")
+            return findings
+
+    except json.JSONDecodeError:
+        print(f"Error: Invalid JSON format in the Report file")
+    except Exception as e:
+        print(f"An error occurred while processing Report JSON: {str(e)}")
+
+
+
+def filter_behaviors(behavior_file, findings):
+    behaviors = findings["config"]["behaviors"]
+
+    if len(behavior_file) > 0:
+        for behavior in behaviors:
+            temp = {}
+            search = next((item for item in behavior_file if item["bhcode"] == behavior), None)
+
+            if search is not None:
+                temp["type"] = "behavior"
+                temp["name"] = behavior
+                temp["description"] = search["behavior"] + " => " + search["explaination"]
+                temp["locations"] = search["detections"]
+                findings["findings"].append(temp)
+        return findings
+    else:
+        return findings
+    
+
+
+def get_all_files(findings):
+    files = []
+
+    for items in findings["findings"]:
+        temp = items["locations"]
+
+        for loc in temp:
+            files.append(loc)
+    
+    findings["files"] = files
+    return findings
+
+
+## =========================================================
+## Start of the API endpoint definitions
+## =========================================================
+
+@app.route('/ping', methods=['GET'])
+def ping():
+    return "pong"
 
 @app.route('/mal', methods=['POST'])
 def mal():
@@ -247,6 +395,34 @@ def bh():
     else:
         jsonContent = processBehaviors(content)
         return jsonContent
+    
+@app.route('/process', methods=['POST'])
+def process():
+    findings = {}
+
+    # Get files from the POST request
+    config_file = request.files['config']
+    vulns_file = request.files['vulns']
+    malware_file = request.files['malware']
+    behavior_file = request.files['behavior']
+
+    # Read and parse JSON data from files
+    config_content = json.load(config_file)
+    vulns_content = json.load(vulns_file)
+    malware_content = json.load(malware_file)
+    behavior_content = json.load(behavior_file)
+
+    # Process the files
+    findings = process_config(config_content)
+    findings = filter_vulns(vulns_content, findings)
+    findings = filter_malware(malware_content, findings)
+    findings = filter_behaviors(behavior_content, findings)
+    findings = get_all_files(findings)
+
+    # Return the findings as a JSON response
+    return jsonify(findings)
+
+
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5001)
+    app.run(debug=True, host='127.0.0.1', port=80)
