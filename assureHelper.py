@@ -11,6 +11,10 @@ codePattern = r'\[\s*(BH\d+)\s*\]'
 catPattern = r':\s*([^/]+)'
 behPattern = r'\].*?\n\s+(.+)'
 expPattern = r'Explained:(.*?)Prevalence'
+thIDPattern = r'\[ (TH\d+) \]'
+descriptionPattern = r'Detected presence of files with behaviors commonly used by malicious software\.'
+rootCausePattern = r'Root Cause ---------------------------------------------------------------------.*?\[ (BH\d+) \] (.+?)\n'
+detectionsPattern = r'Violations ---------------------------------------------------------------------.*?(\d+\) (.+?)\n'
 
 
 app = Flask(__name__)
@@ -136,7 +140,7 @@ def processVuln(content):
 
 
 def processBehaviors(content):
-        # Initialize the result dictionary
+    # Initialize the result dictionary
     result = []
     temp = []
 
@@ -185,11 +189,47 @@ def processBehaviors(content):
         result.append(temp)
 
     
-   # for item in temp:
-       # print(item)
-
     return result
 
+
+def processThreatHunting(content):
+    # Initialize the result dictionary
+    result = []
+
+    # Split the input into sections
+    sections = content.split('--------------------------------------------------------------------------------')
+
+    # Parse the main section
+    for section in sections[1:]:
+        parsed = {}
+        temp = section.strip()
+
+        # Get thID
+        thID = re.search(thIDPattern, temp).group(1)
+        parsed['thID'] = thID
+
+        # Get Description
+        tempParse = temp.split('Root Cause ---------------------------------------------------------------------')
+        desc = tempParse[0].split(')')[1]
+        if desc:
+            parsed["description"] = re.sub(r'\s+', ' ', desc.strip())
+
+
+        # Get Root Cause
+        #rootCause = re.search(rootCausePattern, temp, re.DOTALL)
+        tempParse = temp.split('Violations ---------------------------------------------------------------------')
+        tempParse = tempParse[0].split('Root Cause ---------------------------------------------------------------------')
+        if tempParse[1]:
+            parsed['root_cause'] = re.sub(r'\s+', ' ', tempParse[1].strip())
+
+        # Get Detections
+        detections = temp.split('Violations ---------------------------------------------------------------------')
+        if detections[1]:
+            parsed['detections'] = re.sub(r'\s+', ' ', detections[1].strip())
+
+        result.append(parsed)
+
+    return result
 
 def allowed_file(filename):
     return '.' in filename and \
@@ -216,8 +256,6 @@ def handle_file_upload():
         content_str = base64.b64encode(file_content).decode('utf-8')
 
     return content_str
-
-
 
 ## ========================================================
 ## SBOM filtering functions
@@ -280,7 +318,6 @@ def filter_vulns(vuln_file, findings):
         print(f"An error occurred while processing Report JSON: {str(e)}")
 
 
-
 def filter_malware(malware_file, findings):
     checkSuspect = findings["config"]["suspect"]
     checkMalware = findings["config"]["malware"]
@@ -318,7 +355,6 @@ def filter_malware(malware_file, findings):
         print(f"An error occurred while processing Report JSON: {str(e)}")
 
 
-
 def filter_behaviors(behavior_file, findings):
     behaviors = findings["config"]["behaviors"]
 
@@ -336,8 +372,6 @@ def filter_behaviors(behavior_file, findings):
         return findings
     else:
         return findings
-    
-
 
 def get_all_files(findings):
     files = []
@@ -350,7 +384,6 @@ def get_all_files(findings):
     
     findings["files"] = files
     return findings
-
 
 ## =========================================================
 ## Start of the API endpoint definitions
@@ -395,6 +428,19 @@ def bh():
     else:
         jsonContent = processBehaviors(content)
         return jsonContent
+
+
+@app.route('/th', methods=['POST'])
+def th():
+    content = handle_file_upload()
+    if isinstance(content, tuple):
+        return content
+    
+    if "No issues" in content:
+        return {}
+    else:
+        jsonContent = processThreatHunting(content)
+        return jsonContent
     
 @app.route('/process', methods=['POST'])
 def process():
@@ -422,7 +468,5 @@ def process():
     # Return the findings as a JSON response
     return jsonify(findings)
 
-
-
 if __name__ == '__main__':
-    app.run(debug=True, host='127.0.0.1', port=80)
+    app.run(debug=False, host='172.23.24.30', port=80)

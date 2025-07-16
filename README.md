@@ -5,7 +5,8 @@ Helper API that converts the output from the Assure CLI into JSON. It also will 
 1) Malware
 2) Vulnerabilities 
 3) Behaviors
-4) Filtering
+4) Threats
+5) Filtering
 
 ## The endpoits support only POST and require a file with the request. Only a '.txt' file extension is supported. The the reponse from the API is a JSON version of the text file. 
 
@@ -18,5 +19,6 @@ Helper API that converts the output from the Assure CLI into JSON. It also will 
 curl -F "file=@test_file.txt" http://127.0.0.1/mal > mal.json
 curl -F "file=@test_file.txt" http://127.0.0.1/vuln > vulns.json
 curl -F "file=@test_file.txt" http://127.0.0.1/bh > bh.json
+curl -F "file=@test_file.txt" http://127.0.0.1/th > th.json
 curl -F "config=@config.json" -F "malware=@mal.json" -F "vulns=@vulns.json" -F "behavior=@bh.json" http://127.0.0.1/process > filtered.json
 ```
