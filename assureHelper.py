@@ -12,6 +12,7 @@ catPattern = r':\s*([^/]+)'
 behPattern = r'\].*?\n\s+(.+)'
 expPattern = r'Explained:(.*?)Prevalence'
 thIDPattern = r'\[ (TH\d+) \]'
+sqIDPattern = r'\[ (SQ\d+) \]'
 descriptionPattern = r'Detected presence of files with behaviors commonly used by malicious software\.'
 rootCausePattern = r'Root Cause ---------------------------------------------------------------------.*?\[ (BH\d+) \] (.+?)\n'
 detectionsPattern = r'Violations ---------------------------------------------------------------------.*?(\d+\) (.+?)\n'
@@ -224,12 +225,62 @@ def processThreatHunting(content):
 
         # Get Detections
         detections = temp.split('Violations ---------------------------------------------------------------------')
-        if detections[1]:
-            parsed['detections'] = re.sub(r'\s+', ' ', detections[1].strip())
+        tempDect = []
+        lines = detections[1].splitlines()
+        pattern = r'^\s*\d+\)\s*(.*)$'
+        for line in lines:
+            match = re.match(pattern, line)
+            if match:
+                tempDect.append(match.group(1))
+
+            parsed['detections'] = tempDect
 
         result.append(parsed)
 
     return result
+
+
+def processIssues(content):
+    # Initialize the result dictionary
+    result = []
+
+    # Split the input into sections
+    sections = content.split('--------------------------------------------------------------------------------')
+
+    # Parse the main section
+    for section in sections[1:]:
+        parsed = {}
+        temp = section.strip()
+
+        # Get thID
+        thID = re.search(sqIDPattern, temp).group(1)
+        parsed['sqID'] = thID
+
+        # Get Description
+        tempParse = temp.split('Violations ---------------------------------------------------------------------')
+        desc = tempParse[0].split(')')[1]
+        if desc:
+            parsed["description"] = re.sub(r'\s+', ' ', desc.strip())
+
+        # Get Detections
+        detections = temp.split('Violations ---------------------------------------------------------------------')
+        tempDect = []
+        lines = detections[1].splitlines()
+        pattern = r'^\s*\d+\)\s*(.*)$'
+        for line in lines:
+            match = re.match(pattern, line)
+            if match:
+                tempDect.append(match.group(1))
+
+            parsed['detections'] = tempDect
+
+        result.append(parsed)
+
+    return result
+
+
+
+
 
 def allowed_file(filename):
     return '.' in filename and \
@@ -373,6 +424,35 @@ def filter_behaviors(behavior_file, findings):
     else:
         return findings
 
+def filterIssues(issuesFile, findings):
+    temp = {}
+
+    if len(issuesFile) > 0:
+        for item in issuesFile:
+            temp["type"] = "issue"
+            temp["name"] = item["sqID"]
+            temp["description"] = item["description"]
+            temp["locations"] = item["detections"]
+            findings["findings"].append(temp)
+        return findings
+    else:
+        return findings
+
+def filterThreatHunting(threatFile, findings):
+    temp = {}
+
+    if len(threatFile) > 0:
+        for item in threatFile:
+            temp["type"] = "threat"
+            temp["name"] = item["thID"]
+            temp["description"] = item["description"]+" ROOT CAUSE: "+item["root_cause"]
+            temp["locations"] = item["detections"]
+            findings["findings"].append(temp)
+        return findings
+    else:
+        return findings
+
+
 def get_all_files(findings):
     files = []
 
@@ -441,6 +521,18 @@ def th():
     else:
         jsonContent = processThreatHunting(content)
         return jsonContent
+
+@app.route('/sq', methods=['POST'])
+def sq():
+    content = handle_file_upload()
+    if isinstance(content, tuple):
+        return content
+    
+    if "No issues" in content:
+        return {}
+    else:
+        jsonContent = processIssues(content)
+        return jsonContent
     
 @app.route('/process', methods=['POST'])
 def process():
@@ -451,18 +543,24 @@ def process():
     vulns_file = request.files['vulns']
     malware_file = request.files['malware']
     behavior_file = request.files['behavior']
+    issue_file = request.files['issue']
+    threat_file = request.files['threat']
 
     # Read and parse JSON data from files
     config_content = json.load(config_file)
     vulns_content = json.load(vulns_file)
     malware_content = json.load(malware_file)
     behavior_content = json.load(behavior_file)
+    issue_content = json.load(issue_file)
+    threat_content = json.load(threat_file)
 
     # Process the files
     findings = process_config(config_content)
     findings = filter_vulns(vulns_content, findings)
     findings = filter_malware(malware_content, findings)
     findings = filter_behaviors(behavior_content, findings)
+    findings = filterIssues(issue_content, findings)
+    findings = filterThreatHunting(threat_content, findings)
     findings = get_all_files(findings)
 
     # Return the findings as a JSON response
